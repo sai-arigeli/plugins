@@ -125,10 +125,17 @@ func (m *MyPlugin) Extract(req sdk.ExtractRequest, evt sdk.EventReader) error {
 		if arg[0] == '/' {
 			arg = arg[1:]
 		}
-		hc := strings.Split(arg, "/")
-		val := m.jdata.Get(hc...)
-		if val == nil {
-			return fmt.Errorf("json key not found: %s", arg)
+
+		// walk the object using the json pointer syntax (RFC 6901)
+		pointer := strings.Split(arg, "/")
+		val := m.jdata
+		for _, key := range pointer {
+			key = strings.Replace(key, "~1", "/", -1)
+			key = strings.Replace(key, "~0", "~", -1)
+			val = val.Get(key)
+			if val == nil {
+				return fmt.Errorf("json pointer not found: %s", arg)
+			}
 		}
 
 		if val.Type() == fastjson.TypeString {
