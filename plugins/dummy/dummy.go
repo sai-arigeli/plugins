@@ -34,7 +34,7 @@ import (
 // Plugin consts
 const (
 	PluginRequiredApiVersion        = "0.3.0"
-	PluginID                 uint32 = 117
+	PluginID                 uint32 = 999
 	PluginName                      = "weather"
 	PluginDescription               = "Weather plugin for educational purposes"
 	PluginContact                   = "github.com/falcosecurity/plugins"
