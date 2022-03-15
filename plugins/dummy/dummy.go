@@ -21,10 +21,9 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math/rand"
 	"strconv"
 	"time"
-
+	"net/http"
 	"github.com/alecthomas/jsonschema"
 	"github.com/falcosecurity/plugin-sdk-go/pkg/sdk"
 	"github.com/falcosecurity/plugin-sdk-go/pkg/sdk/plugins"
@@ -35,12 +34,12 @@ import (
 // Plugin consts
 const (
 	PluginRequiredApiVersion        = "0.3.0"
-	PluginID                 uint32 = 3
-	PluginName                      = "dummy"
-	PluginDescription               = "Reference plugin for educational purposes"
+	PluginID                 uint32 = 117
+	PluginName                      = "weather"
+	PluginDescription               = "Weather plugin for educational purposes"
 	PluginContact                   = "github.com/falcosecurity/plugins"
 	PluginVersion                   = "0.2.1"
-	PluginEventSource               = "dummy"
+	PluginEventSource               = "weather"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -48,13 +47,12 @@ const (
 type MyPluginConfig struct {
 	// This reflects potential internal state for the plugin. In
 	// this case, the plugin is configured with a jitter.
-	Jitter uint64 `json:"jitter" jsonschema:"description=A random amount added to the sample of each event (Default: 10)"`
+	Longitude float64 `json:"lon" jsonschema:"description=Longitude"`
+	Latitude float64 `json:"lat" jsonschema:"description=Latitude"`
 }
 
 type MyPlugin struct {
 	plugins.BasePlugin
-	// Will be used to randomize samples
-	rand *rand.Rand
 	// Contains the init configuration values
 	config MyPluginConfig
 }
@@ -71,9 +69,6 @@ type MyInstance struct {
 	// A count of events returned. Used to count against maxEvents.
 	counter uint64
 
-	// A semi-random numeric value, derived from this value and
-	// jitter. This is put in every event as the data property.
-	sample uint64
 }
 
 func init() {
@@ -83,7 +78,8 @@ func init() {
 }
 
 func (p *MyPluginConfig) setDefault() {
-	p.Jitter = 10
+	p.Latitude = 37.5742
+	p.Longitude = -122.3297
 }
 
 func (m *MyPlugin) Info() *plugins.Info {
@@ -112,9 +108,6 @@ func (p *MyPlugin) InitSchema() *sdk.SchemaInfo {
 }
 
 func (m *MyPlugin) Init(cfg string) error {
-	// initialize state
-	m.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
-
 	// The format of cfg is a json object with a single param
 	// "jitter", e.g. {"jitter": 10}
 	// Empty configs are allowed, in which case the default is used.
@@ -153,12 +146,53 @@ func (m *MyPlugin) Open(prms string) (source.Instance, error) {
 		initParams: prms,
 		maxEvents:  obj["maxEvents"],
 		counter:    0,
-		sample:     obj["start"],
 	}, nil
 }
 
 func (m *MyInstance) Close() {
 	// nothing to do here
+}
+type Response struct {
+	Coord struct {
+		Lon float64 `json:"lon"`
+		Lat float64 `json:"lat"`
+	} `json:"coord"`
+	Weather []struct {
+		ID          int    `json:"id"`
+		Main        string `json:"main"`
+		Description string `json:"description"`
+		Icon        string `json:"icon"`
+	} `json:"weather"`
+	Base string `json:"base"`
+	Main struct {
+		Temp      float64 `json:"temp"`
+		FeelsLike float64 `json:"feels_like"`
+		TempMin   float64 `json:"temp_min"`
+		TempMax   float64 `json:"temp_max"`
+		Pressure  int     `json:"pressure"`
+		Humidity  int     `json:"humidity"`
+	} `json:"main"`
+	Visibility int `json:"visibility"`
+	Wind       struct {
+		Speed float64 `json:"speed"`
+		Deg   int     `json:"deg"`
+		Gust  float64 `json:"gust"`
+	} `json:"wind"`
+	Clouds struct {
+		All int `json:"all"`
+	} `json:"clouds"`
+	Dt  int `json:"dt"`
+	Sys struct {
+		Type    int    `json:"type"`
+		ID      int    `json:"id"`
+		Country string `json:"country"`
+		Sunrise int    `json:"sunrise"`
+		Sunset  int    `json:"sunset"`
+	} `json:"sys"`
+	Timezone int    `json:"timezone"`
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Cod      int    `json:"cod"`
 }
 
 func (m *MyInstance) NextBatch(pState sdk.PluginState, evts sdk.EventWriters) (int, error) {
@@ -169,23 +203,27 @@ func (m *MyInstance) NextBatch(pState sdk.PluginState, evts sdk.EventWriters) (i
 
 	var n int
 	var evt sdk.EventWriter
-	myPlugin := pState.(*MyPlugin)
 	for n = 0; m.counter < m.maxEvents && n < evts.Len(); n++ {
 		evt = evts.Get(n)
 		m.counter++
-
-		// Increment sample by 1, also add a jitter of [0:jitter]
-		m.sample += 1 + uint64(myPlugin.rand.Int63n(int64(myPlugin.config.Jitter+1)))
-
-		// The representation of a dummy event is the sample as a string.
-		str := strconv.Itoa(int(m.sample))
+		resp, er := http.Get("https://api.openweathermap.org/data/2.5/weather?lat=37.57420&lon=-122.32970&appid=3407ea8207f5dde24295faf44e8d6f9a&units=imperial")
+		if er != nil {
+			return 0, er
+		}
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		var result Response
+		if err := json.Unmarshal(body, &result); err != nil {
+			return 0, err
+		}
+		str := strconv.FormatFloat(result.Main.Temp, 'E', -1, 64)
 
 		// It is not mandatory to set the Timestamp of the event (it
 		// would be filled in by the framework if set to uint_max),
 		// but it's a good practice.
 		evt.SetTimestamp(uint64(time.Now().UnixNano()))
 
-		_, err := evt.Writer().Write([]byte(str))
+		_, err = evt.Writer().Write([]byte(str))
 		if err != nil {
 			return 0, err
 		}
@@ -206,9 +244,7 @@ func (m *MyPlugin) String(in io.ReadSeeker) (string, error) {
 
 func (m *MyPlugin) Fields() []sdk.FieldEntry {
 	return []sdk.FieldEntry{
-		{Type: "uint64", Name: "dummy.divisible", ArgRequired: true, Desc: "Return 1 if the value is divisible by the provided divisor, 0 otherwise"},
-		{Type: "uint64", Name: "dummy.value", Desc: "The sample value in the event"},
-		{Type: "string", Name: "dummy.strvalue", Desc: "The sample value in the event, as a string"},
+		{Type: "float64", Name: "weather.temp", Desc: "Temperature right now"},
 	}
 }
 
@@ -218,27 +254,13 @@ func (m *MyPlugin) Extract(req sdk.ExtractRequest, evt sdk.EventReader) error {
 		return err
 	}
 	evtStr := string(evtBytes)
-	evtVal, err := strconv.Atoi(evtStr)
+	f, err := strconv.ParseFloat(evtStr, 8)
 	if err != nil {
 		return err
 	}
-
 	switch req.FieldID() {
-	case 0: // dummy.divisible
-		arg := req.Arg()
-		divisor, err := strconv.Atoi(arg)
-		if err != nil {
-			return fmt.Errorf("argument to dummy.divisible %s could not be converted to number", arg)
-		}
-		if evtVal%divisor == 0 {
-			req.SetValue(uint64(1))
-		} else {
-			req.SetValue(uint64(0))
-		}
-	case 1: // dummy.value
-		req.SetValue(uint64(evtVal))
-	case 2: // dummy.strvalue
-		req.SetValue(evtStr)
+	case 0: // weather.temp
+		req.SetValue(f)
 	default:
 		return fmt.Errorf("no known field: %s", req.Field())
 	}

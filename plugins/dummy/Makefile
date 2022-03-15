@@ -14,7 +14,7 @@
 SHELL=/bin/bash -o pipefail
 GO ?= go
 
-NAME := dummy
+NAME := weather
 OUTPUT := lib$(NAME).so
 
 ifeq ($(DEBUG), 1)
